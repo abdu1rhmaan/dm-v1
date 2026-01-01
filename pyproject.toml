@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dm-pro"
+version = "0.1.0"
+description = "Professional CLI Download Manager with Clean Architecture"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "dm-pro Team", email = "dev@example.com"}
+]
+keywords = ["cli", "download-manager", "clean-architecture"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet",
+    "Topic :: Utilities",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+    "requests>=2.25.0",
+    "beautifulsoup4>=4.9.0",
+    "lxml>=4.6.0"
+]
+
+[project.optional-dependencies]
+development = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=21.0",
+    "flake8>=3.8"
+]
+test = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0"
+]
+
+[project.scripts]
+dm = "cli.app:main"
+
+[project.urls]
+Homepage = "https://github.com/abdu1rhmaan/dm-v1.git"
+Repository = "https://github.com/abdu1rhmaan/dm-v1.git"
+Documentation = "https://github.com/abdu1rhmaan/dm-pro/blob/main/README.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+readme = {file = ["README.md"], content-type = "text/markdown"}
