@@ -77,6 +77,10 @@ class DownloadExecutionService:
                     
                 # Report progress
                 if progress_manager:
+                    from application.progress.progress_state import ProgressPhase
+                    # Set phase to downloading once we have data
+                    if downloaded > 0:
+                        progress_manager._state.set_phase(ProgressPhase.DOWNLOADING)
                     progress_manager.update(downloaded, total)
                 else:
                     # Fallback to the original progress reporter
@@ -97,6 +101,9 @@ class DownloadExecutionService:
                 
             # Report completion
             if progress_manager:
+                # Set phase to finalizing before finish
+                from application.progress.progress_state import ProgressPhase
+                progress_manager._state.set_phase(ProgressPhase.FINALIZING)
                 progress_manager.finish()
             else:
                 self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()
@@ -162,17 +169,21 @@ class DownloadExecutionService:
             def on_chunk(chunk: bytes, downloaded: int, total: int):
                 # Write chunk to file
                 self.writer.write(chunk)
-                        
+                                
                 # Update task progress
                 task.downloaded = downloaded
                 if total and total > 0:
                     task.total = total
-                        
+                                
                 # Update task in repository
                 self.repo.update(task)
-                        
+                                
                 # Report progress
                 if progress_manager:
+                    from application.progress.progress_state import ProgressPhase
+                    # Set phase to downloading once we have data
+                    if downloaded > 0:
+                        progress_manager._state.set_phase(ProgressPhase.DOWNLOADING)
                     progress_manager.update(downloaded, total)
                 else:
                     # Fallback to the original progress reporter
@@ -229,6 +240,9 @@ class DownloadExecutionService:
                                     
             # Report completion
             if progress_manager:
+                # Set phase to finalizing before finish
+                from application.progress.progress_state import ProgressPhase
+                progress_manager._state.set_phase(ProgressPhase.FINALIZING)
                 progress_manager.finish()
             else:
                 self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()
