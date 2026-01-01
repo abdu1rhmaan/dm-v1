@@ -8,7 +8,9 @@ from infrastructure.network.http_downloader import HttpDownloader
 from infrastructure.fs.file_writer import FileWriter
 from application.progress.progress_reporter import ProgressReporter
 from application.progress.console_progress_reporter import ConsoleProgressReporter
+from application.progress.progress_manager import ProgressManager
 from application.hls.hls_downloader import HlsDownloader
+from application.mapping.queue_id_translator import QueueIdTranslator
 
 
 class DownloadExecutionService:
@@ -17,7 +19,8 @@ class DownloadExecutionService:
         self.downloader = downloader
         self.writer = writer
         self.hls_downloader = hls_downloader or HlsDownloader()
-        self.progress_reporter = progress_reporter or ConsoleProgressReporter()
+        self.progress_reporter = progress_reporter  # This will be overridden per download
+        self.queue_translator = QueueIdTranslator(repo)
 
     def execute(self, task_id: str, pause_check: Callable[[], bool] | None = None):
         # Get the task from repository
@@ -31,19 +34,28 @@ class DownloadExecutionService:
         if task.status not in [TaskStatus.DOWNLOADING]:
             raise ValueError(f"Task must be in DOWNLOADING state for execution, current status: {task.status.value}")
                 
+        # Get the queue ID for this task
+        queue_id = self.queue_translator.get_queue_id_from_uuid(task_id)
+        if queue_id is None:
+            queue_id = 0  # Default to 0 if not found
+        
+        # Create a ProgressManager for this download
+        from application.progress.progress_manager import ProgressManager
+        progress_manager = ProgressManager(queue_id, task.total)
+        
         # Check if this is an HLS stream (has .m3u8 extension or specific HLS indicators)
         if self._is_hls_stream(task.url):
             # Handle HLS stream download
-            return self._execute_hls_download(task, pause_check)
+            return self._execute_hls_download(task, pause_check, progress_manager)
         else:
             # Handle regular HTTP download
-            return self._execute_regular_download(task, pause_check)
+            return self._execute_regular_download(task, pause_check, progress_manager)
         
     def _is_hls_stream(self, url: str) -> bool:
         """Check if the URL is an HLS stream."""
         return url.lower().endswith('.m3u8')
         
-    def _execute_hls_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None):
+    def _execute_hls_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None, progress_manager=None):
         """Execute HLS stream download."""
         try:
             # Extract filename from URL or use a default
@@ -57,14 +69,18 @@ class DownloadExecutionService:
             def progress_callback(downloaded: int, total: int):
                 # Update task progress
                 task.downloaded = downloaded
-                if total and total > 0:
+                if total is not None and total > 0:
                     task.total = total
                     
                 # Update task in repository
                 self.repo.update(task)
                     
                 # Report progress
-                self.progress_reporter.update(downloaded, total)
+                if progress_manager:
+                    progress_manager.update(downloaded, total)
+                else:
+                    # Fallback to the original progress reporter
+                    self.progress_reporter.update(downloaded, total) if self.progress_reporter else ConsoleProgressReporter().update(downloaded, total)
                 
             # Download the HLS stream
             success = self.hls_downloader.download_variant(
@@ -80,32 +96,38 @@ class DownloadExecutionService:
                 return  # Exit early if paused
                 
             # Report completion
-            self.progress_reporter.finish()
+            if progress_manager:
+                progress_manager.finish()
+            else:
+                self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()
                 
         except Exception as e:
             # Report completion on error
-            self.progress_reporter.finish()
+            if progress_manager:
+                progress_manager.finish()
+            else:
+                self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()
             raise e
         
-    def _execute_regular_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None):
+    def _execute_regular_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None, progress_manager=None):
         """Execute regular HTTP download."""
         try:
             # Check if resumability has been checked, if not, check and update task
             if not task.capability_checked:
                 # Get content details to determine if download is resumable
                 is_resumable, has_content_length, content_length = self.downloader.get_content_details(task.url)
-                
+                    
                 # Update task with resumability info
                 task.resumable = is_resumable
                 task.capability_checked = True
-                
+                    
                 # Update total if we got it from headers
                 if content_length and not task.total:
                     task.total = content_length
-                
+                    
                 # Save the updated task
                 self.repo.update(task)
-                
+                    
             # Extract filename from URL or use a default
             filename = self._extract_filename_from_url(task.url) or f"download_{task.id}"
                 
@@ -140,18 +162,22 @@ class DownloadExecutionService:
             def on_chunk(chunk: bytes, downloaded: int, total: int):
                 # Write chunk to file
                 self.writer.write(chunk)
-                    
+                        
                 # Update task progress
                 task.downloaded = downloaded
                 if total and total > 0:
                     task.total = total
-                    
+                        
                 # Update task in repository
                 self.repo.update(task)
-                    
+                        
                 # Report progress
-                self.progress_reporter.update(downloaded, total)
-                
+                if progress_manager:
+                    progress_manager.update(downloaded, total)
+                else:
+                    # Fallback to the original progress reporter
+                    self.progress_reporter.update(downloaded, total) if self.progress_reporter else ConsoleProgressReporter().update(downloaded, total)
+                    
             # Start the download process
             if range_supported and start_byte > 0 and task.resumable:
                 # Use Range request to resume download
@@ -170,19 +196,19 @@ class DownloadExecutionService:
                     self.repo.update(task)
                     start_byte = 0
                 self.downloader.download(task.url, on_chunk, pause_check=pause_check)
-                
+                    
             # After download completes OR is paused, check if we need to finalize
             # Check the pause check directly instead of checking repository
             if pause_check and pause_check():
                 # If paused, close the file without finalizing
                 self.writer.close()
-                                
+                                    
                 # Print message about pause
                 if task.total and task.total > 0:
                     print(f"Paused safely at {task.downloaded}/{task.total} bytes")
                 else:
                     print(f"Paused safely at {task.downloaded} bytes")
-                                
+                                    
                 # For non-resumable tasks, if paused mid-download, remove the .part file
                 # to ensure a clean restart
                 if not task.resumable and task.downloaded > 0:
@@ -194,19 +220,25 @@ class DownloadExecutionService:
                     # Reset downloaded bytes to 0
                     task.downloaded = 0
                     self.repo.update(task)
-                                
+                                    
                 # Don't report completion if paused
                 return  # Exit early if paused
             else:
                 # If completed normally, finalize the file
                 self.writer.finalize()
-                                
+                                    
             # Report completion
-            self.progress_reporter.finish()
-            
+            if progress_manager:
+                progress_manager.finish()
+            else:
+                self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()
+                
         except Exception as e:
             # Report completion on error
-            self.progress_reporter.finish()
+            if progress_manager:
+                progress_manager.finish()
+            else:
+                self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()
             raise e
     
     def _extract_filename_from_url(self, url: str) -> str | None:
