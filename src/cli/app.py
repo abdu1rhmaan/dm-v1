@@ -4,9 +4,36 @@ from domain.entities.task_status import TaskStatus
 
 
 def main():
-    bs = Bootstrap()
+    # Parse command line arguments for parallel downloads
+    max_parallel = 1
+    max_connections = 1
+    
+    # Look for --parallel and --connections options
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == '--parallel' and i + 1 < len(args):
+            try:
+                max_parallel = int(args[i + 1])
+                args = args[:i] + args[i + 2:]  # Remove these arguments
+                sys.argv = [sys.argv[0]] + args  # Update sys.argv
+            except ValueError:
+                print(f"Error: --parallel value must be a number")
+                return
+        elif args[i] == '--connections' and i + 1 < len(args):
+            try:
+                max_connections = int(args[i + 1])
+                args = args[:i] + args[i + 2:]  # Remove these arguments
+                sys.argv = [sys.argv[0]] + args  # Update sys.argv
+            except ValueError:
+                print(f"Error: --connections value must be a number")
+                return
+        else:
+            i += 1
+    
+    bs = Bootstrap(max_parallel_downloads=max_parallel)
     if len(sys.argv) < 2:
-        print("Usage: dm add <url> (handles files, pages, streams) | dm start <queue_id> | dm start <task_id> | dm start --all | dm pause <queue_id> | dm pause --all | dm list | dm remove <queue_id> | dm queue move <queue_id> up|down | dm queue swap <id1> <id2> | dm archive list | dm archive clone <archive_id> | dm discover <url> [--filter] | dm engine start|stop|status")
+        print("Usage: dm add <url> (handles files, pages, streams) | dm start <queue_id> | dm start <task_id> | dm start --all | dm pause <queue_id> | dm pause <queue_id> <queue_id> ... | dm pause <queue_id>-<queue_id> | dm pause --all | dm resume <queue_id> | dm resume <queue_id> <queue_id> ... | dm resume <queue_id>-<queue_id> | dm resume --all | dm list | dm remove <queue_id> | dm queue move <queue_id> up|down | dm queue swap <id1> <id2> | dm archive list | dm archive clone <archive_id> | dm discover <url> [--filter] | dm demo parallel")
         return
 
     if sys.argv[1] == "add":
@@ -43,70 +70,56 @@ def main():
             
             # Check if it's --all flag to start all pending tasks
             if sys.argv[2] == "--all":
-                if engine_running:
-                    print("Starting all pending downloads via background engine...")
-                    bs.background_engine.execute_pending_downloads()
-                else:
-                    print("Starting all pending downloads...")
-                    bs.download_engine.execute_pending_downloads()
+                if not engine_running:
+                    # Start the background engine if not already running
+                    bs.background_engine.start()
+                    print("Background engine started automatically")
+                print("Starting all pending downloads via background engine...")
+                bs.background_engine.execute_pending_downloads()
             else:
                 # Try to parse as queue ID first (numeric)
                 try:
                     queue_id = int(sys.argv[2])
                     print(f"Starting task {queue_id}...")
-                    if engine_running:
-                        # Get the UUID for the queue ID
-                        task_uuid = bs.list_tasks.translator.get_uuid_from_queue_id(queue_id)
-                        if not task_uuid:
-                            print(f"Error: Task with queue ID {queue_id} not found")
-                            return
-                        
-                        # Check if this is resuming a paused task
-                        task = bs.repo.get(task_uuid)
-                        if task and task.status == TaskStatus.PAUSED:
-                            if task.resumable:
-                                print(f"Resuming from byte {task.downloaded}")
-                            else:
-                                print(f"This download does not support resume. Restarting from beginning.")
-                        
-                        bs.background_engine.execute_task(task_uuid)
-                        print(f"Task {queue_id} enqueued in background engine")
-                    else:
-                        # Get the task to check if it's resuming
-                        task_uuid = bs.list_tasks.translator.get_uuid_from_queue_id(queue_id)
-                        if task_uuid:
-                            task = bs.repo.get(task_uuid)
-                            if task and task.status == TaskStatus.PAUSED:
-                                if task.resumable:
-                                    print(f"Resuming from byte {task.downloaded}")
-                                else:
-                                    print(f"This download does not support resume. Restarting from beginning.")
-                        bs.execute_task_by_queue.execute(queue_id)
-                        print(f"Task {queue_id} completed")
+                    # Get the UUID for the queue ID
+                    task_uuid = bs.list_tasks.translator.get_uuid_from_queue_id(queue_id)
+                    if not task_uuid:
+                        print(f"Error: Task with queue ID {queue_id} not found")
+                        return
+                    
+                    # Start the engine if not already running
+                    if not engine_running:
+                        bs.background_engine.start()
+                        print("Background engine started automatically")
+                    
+                    # Check if this is resuming a paused task
+                    task = bs.repo.get(task_uuid)
+                    if task and task.status == TaskStatus.PAUSED:
+                        if task.resumable:
+                            print(f"Resuming from byte {task.downloaded}")
+                        else:
+                            print(f"This download does not support resume. Restarting from beginning.")
+                    
+                    bs.background_engine.execute_task(task_uuid)
+                    print(f"Task {queue_id} enqueued in background engine")
                 except ValueError:
                     # If not numeric, treat as UUID
                     task_id = sys.argv[2]
                     print(f"Starting task {task_id[:8]}...")
-                    if engine_running:
-                        # Check if this is resuming a paused task
-                        task = bs.repo.get(task_id)
-                        if task and task.status == TaskStatus.PAUSED:
-                            if task.resumable:
-                                print(f"Resuming from byte {task.downloaded}")
-                            else:
-                                print(f"This download does not support resume. Restarting from beginning.")
-                        bs.background_engine.execute_task(task_id)
-                        print(f"Task {task_id[:8]} enqueued in background engine")
-                    else:
-                        # Check if this is resuming a paused task
-                        task = bs.repo.get(task_id)
-                        if task and task.status == TaskStatus.PAUSED:
-                            if task.resumable:
-                                print(f"Resuming from byte {task.downloaded}")
-                            else:
-                                print(f"This download does not support resume. Restarting from beginning.")
-                        bs.execute_task.execute(task_id)
-                        print(f"Task {task_id[:8]} completed")
+                    # Start the engine if not already running
+                    if not engine_running:
+                        bs.background_engine.start()
+                        print("Background engine started automatically")
+                    
+                    # Check if this is resuming a paused task
+                    task = bs.repo.get(task_id)
+                    if task and task.status == TaskStatus.PAUSED:
+                        if task.resumable:
+                            print(f"Resuming from byte {task.downloaded}")
+                        else:
+                            print(f"This download does not support resume. Restarting from beginning.")
+                    bs.background_engine.execute_task(task_id)
+                    print(f"Task {task_id[:8]} enqueued in background engine")
         except ValueError as e:
             print(f"Error: {e}")
         except Exception as e:
@@ -155,43 +168,103 @@ def main():
     
     elif sys.argv[1] == "pause":
         if len(sys.argv) < 3:
-            print("Usage: dm pause <queue_id> | dm pause --all")
+            print("Usage: dm pause <queue_id> | dm pause <queue_id> <queue_id> ... | dm pause <queue_id>-<queue_id> | dm pause --all")
             return
         try:
-            if sys.argv[2] == "--all":
+            # Import the task target parser
+            from application.use_cases.task_target_parser import parse_task_targets
+            from application.use_cases.pause_multiple_service import PauseMultipleService
+            
+            args = sys.argv[2:]
+            
+            if '--all' in args:
                 # Pause all downloading tasks
                 paused_count = bs.pause_all.execute()
                 print(f"Paused {paused_count} downloading tasks")
             else:
-                # Try to parse as queue ID first (numeric)
-                try:
-                    queue_id = int(sys.argv[2])
-                    print(f"Pausing task {queue_id}...")
-                    # Get the UUID for the queue ID
-                    task_uuid = bs.list_tasks.translator.get_uuid_from_queue_id(queue_id)
-                    if not task_uuid:
-                        print(f"Error: Task with queue ID {queue_id} not found")
-                        return
-                    
-                    # Check if the task is resumable to provide appropriate message
-                    task = bs.list_tasks.execute()[queue_id - 1] if queue_id <= len(bs.list_tasks.execute()) else None
-                    if task and not task.resumable:
-                        print(f"Note: This download does not support resume. If interrupted, it will restart from beginning.")
-                    
-                    # Alternative method: get task by UUID
-                    if not task:
-                        task = bs.repo.get(task_uuid)
-                        if task and not task.resumable:
-                            print(f"Note: This download does not support resume. If interrupted, it will restart from beginning.")
-                    
-                    bs.download_engine.pause_task(task_uuid)
-                    print(f"Task {queue_id} paused")
-                except ValueError:
-                    print(f"Error: Queue ID must be a number")
+                # Parse task targets
+                queue_ids = parse_task_targets(args)
+                
+                if not queue_ids:
+                    print("No valid task IDs provided")
+                    return
+                
+                # Create pause service and pause tasks
+                pause_service = PauseMultipleService(bs.repo, bs.download_engine)
+                paused_queue_ids, skipped_queue_ids = pause_service.pause_tasks(queue_ids)
+                
+                # Provide feedback to user
+                if paused_queue_ids:
+                    print(f"Paused tasks: {', '.join(map(str, sorted(paused_queue_ids)))}")
+                
+                if skipped_queue_ids:
+                    print(f"Skipped (not active): {', '.join(map(str, sorted(skipped_queue_ids)))}")
+                
+                if not paused_queue_ids and not skipped_queue_ids:
+                    print("No tasks found to pause")
         except Exception as e:
-            print(f"Error pausing task: {e}")
+            print(f"Error pausing tasks: {e}")
+    
+    elif sys.argv[1] == "resume":
+        if len(sys.argv) < 3:
+            print("Usage: dm resume <queue_id> | dm resume <queue_id> <queue_id> ... | dm resume <queue_id>-<queue_id> | dm resume --all")
+            return
+        try:
+            # Import the task target parser and resume service
+            from application.use_cases.task_target_parser import parse_task_targets
+            from application.use_cases.resume_multiple_service import ResumeMultipleService
+            
+            args = sys.argv[2:]
+            
+            if '--all' in args:
+                # Resume all paused tasks using the engine's resume_task method
+                all_tasks = bs.repo.list_by_queue_order()
+                resumed_count = 0
+                for task in all_tasks:
+                    if task.status == TaskStatus.PAUSED:
+                        try:
+                            # Resume the task using the engine's method
+                            bs.download_engine.resume_task(task.id)
+                            resumed_count += 1
+                        except Exception:
+                            continue  # Continue with other tasks even if one fails
+                print(f"Resumed {resumed_count} paused tasks")
+                
+                # If no engine is running, start one automatically
+                if not bs.background_engine.is_running():
+                    bs.background_engine.start()
+                    print("Background engine started automatically")
+            else:
+                # Parse task targets
+                queue_ids = parse_task_targets(args)
+                
+                if not queue_ids:
+                    print("No valid task IDs provided")
+                    return
+                
+                # Create resume service and resume tasks
+                resume_service = ResumeMultipleService(bs.repo, bs.download_engine)
+                resumed_queue_ids, skipped_queue_ids = resume_service.resume_tasks(queue_ids)
+                
+                # Provide feedback to user
+                if resumed_queue_ids:
+                    print(f"Resumed tasks: {', '.join(map(str, sorted(resumed_queue_ids)))}")
+                
+                if skipped_queue_ids:
+                    print(f"Skipped (not paused): {', '.join(map(str, sorted(skipped_queue_ids)))}")
+                
+                if not resumed_queue_ids and not skipped_queue_ids:
+                    print("No tasks found to resume")
+                
+                # If no engine is running and we have tasks to resume, start the engine automatically
+                if not bs.background_engine.is_running() and resumed_queue_ids:
+                    bs.background_engine.start()
+                    print("Background engine started automatically")
+        except Exception as e:
+            print(f"Error resuming tasks: {e}")
     
     elif sys.argv[1] == "queue":
+
         if len(sys.argv) < 4:
             print("Usage: dm queue move <queue_id> up|down | dm queue swap <id1> <id2>")
             return
@@ -317,36 +390,57 @@ def main():
         except Exception as e:
             print(f"Error discovering links: {e}")
     
-    elif sys.argv[1] == "engine":
-
-        if len(sys.argv) < 3:
-            print("Usage: dm engine start | dm engine stop | dm engine status")
+    elif sys.argv[1] == "demo":
+        if len(sys.argv) < 2 or sys.argv[2] != "parallel":
+            print("Usage: dm demo parallel")
             return
         
         try:
-            if sys.argv[2] == "start":
-                if bs.background_engine.is_running():
-                    print("Background engine is already running")
-                else:
-                    bs.background_engine.start()
-                    print("Background engine started")
-            elif sys.argv[2] == "stop":
-                if not bs.background_engine.is_running():
-                    print("Background engine is not running")
-                else:
-                    bs.background_engine.stop()
-                    print("Background engine stopped")
-            elif sys.argv[2] == "status":
-                if bs.background_engine.is_running():
-                    print("Background engine is running")
-                else:
-                    print("Background engine is not running")
-            else:
-                print("Usage: dm engine start | dm engine stop | dm engine status")
+            print("Adding 5 test tasks for parallel download demo...")
+            
+            # Add 5 test download tasks
+            test_urls = [
+                "https://httpbin.org/bytes/102400",
+                "https://httpbin.org/bytes/102400",
+                "https://httpbin.org/bytes/102400",
+                "https://httpbin.org/bytes/102400",
+                "https://httpbin.org/bytes/102400"
+            ]
+            
+            from domain.entities.download_task import DownloadTask
+            import uuid
+            
+            for i, url in enumerate(test_urls, 1):
+                task = DownloadTask(
+                    id=str(uuid.uuid4()),
+                    url=url,
+                    status=TaskStatus.PENDING,
+                    downloaded=0,
+                    total=None,
+                    resumable=True,
+                    capability_checked=False,
+                    queue_order=i
+                )
+                bs.repo.add(task)
+                print(f"Added test task {i} | id={task.id[:8]} | {url.split('/')[-1]}")
+            
+            print("Starting background engine with parallel downloads (max 2)...\nNote: For best parallel demo experience, run with --parallel 2 parameter")
+            
+            # Start the background engine if not already running
+            if not bs.background_engine.is_running():
+                bs.background_engine.start()
+            
+            # Execute pending downloads
+            bs.background_engine.execute_pending_downloads()
+            
         except Exception as e:
-            print(f"Error managing engine: {e}")
+            print(f"Error running demo: {e}")
+            import traceback
+            traceback.print_exc()
     
     elif sys.argv[1] == "remove":
+
+
 
         if len(sys.argv) < 3:
             print("Usage: dm remove <queue_id>")
@@ -361,7 +455,7 @@ def main():
             print(f"Error removing task: {e}")
     
     else:
-        print("Unknown command. Usage: dm add <url> (handles files, pages, streams) | dm start <queue_id> | dm start <task_id> | dm start --all | dm pause <queue_id> | dm pause --all | dm list | dm remove <queue_id> | dm queue move <queue_id> up|down | dm queue swap <id1> <id2> | dm archive list | dm archive clone <archive_id> | dm discover <url> [--filter] | dm engine start|stop|status")
+        print("Unknown command. Usage: dm add <url> (handles files, pages, streams) | dm start <queue_id> | dm start <task_id> | dm start --all | dm pause <queue_id> | dm pause <queue_id> <queue_id> ... | dm pause <queue_id>-<queue_id> | dm pause --all | dm resume <queue_id> | dm resume <queue_id> <queue_id> ... | dm resume <queue_id>-<queue_id> | dm resume --all | dm list | dm remove <queue_id> | dm queue move <queue_id> up|down | dm queue swap <id1> <id2> | dm archive list | dm archive clone <archive_id> | dm discover <url> [--filter] | dm demo parallel")
 
 
 if __name__ == "__main__":

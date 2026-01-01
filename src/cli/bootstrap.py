@@ -13,6 +13,8 @@ from application.use_cases.remove_task_by_queue_service import RemoveTaskByQueue
 from application.use_cases.pause_all_service import PauseAllService
 from application.use_cases.queue_management_service import QueueManagementService
 from application.use_cases.archive_service import ArchiveService
+from application.use_cases.pause_multiple_service import PauseMultipleService
+from application.use_cases.resume_multiple_service import ResumeMultipleService
 from application.engine.background_engine_service import BackgroundEngineService
 from application.discovery.page_discovery_service import PageDiscoveryService
 from application.grabber.grabber_engine import GrabberEngine
@@ -21,19 +23,36 @@ from application.hls.hls_engine import HlsEngine
 from application.hls.hls_downloader import HlsDownloader
 from application.engine.download_engine import DownloadEngine
 from application.progress.console_progress_reporter import ConsoleProgressReporter
+from application.engine.connection_manager import ConnectionManager
+from application.progress.progress_manager_registry import progress_manager_registry
 
 
 class Bootstrap:
-    def __init__(self):
+    def __init__(self, max_parallel_downloads=1):
+        self.max_parallel_downloads = max_parallel_downloads
         self.repo = SQLiteTaskRepository()
-        self.downloader = HttpDownloader()
+        self.connection_manager = ConnectionManager()
+        self.downloader = HttpDownloader(self.connection_manager)
         self.writer = FileWriter()
         self.add_task = AddTaskService(self.repo)
-        self.progress_reporter = ConsoleProgressReporter()
         
         # Initialize HLS services first
         self.hls_engine = HlsEngine()
         self.hls_downloader = HlsDownloader()
+        
+        # Initialize progress manager based on parallel mode
+        if max_parallel_downloads > 1:
+            # In parallel mode, create and register a MultiProgressManager
+            from application.progress.multi_progress_manager import MultiProgressManager
+            self.multi_progress_manager = MultiProgressManager()
+            progress_manager_registry.set_multi_progress_manager(self.multi_progress_manager)
+            # Start the rendering loop
+            self.multi_progress_manager.start_rendering()
+            self.progress_reporter = None  # Use the multi-progress manager instead
+        else:
+            # In single-task mode, use console progress reporter
+            self.multi_progress_manager = None
+            self.progress_reporter = ConsoleProgressReporter()
         
         # Initialize download execution service with HLS downloader
         self.download_execution = DownloadExecutionService(self.repo, self.downloader, self.writer, self.progress_reporter, self.hls_downloader)
@@ -49,10 +68,10 @@ class Bootstrap:
         self.event_manager.add_listener(self.archive_listener)
         
         # Create download engine with event manager
-        self.download_engine = DownloadEngine(self.repo, self.download_execution, self.event_manager)
+        self.download_engine = DownloadEngine(self.repo, self.download_execution, self.event_manager, max_parallel_downloads)
         
         # Background engine uses the same event manager
-        self.background_engine = BackgroundEngineService(self.repo, self.download_execution, self.event_manager)
+        self.background_engine = BackgroundEngineService(self.repo, self.download_execution, self.event_manager, max_parallel_downloads)
         self.discovery = PageDiscoveryService()
         self.grabber_engine = GrabberEngine()
         self.preview_renderer = PreviewRenderer()
@@ -64,6 +83,8 @@ class Bootstrap:
         self.execute_task = ExecuteTaskService(self.repo, self.download_engine)
         self.execute_task_by_queue = ExecuteTaskByQueueService(self.repo, self.download_engine)
         self.pause_all = PauseAllService(self.repo, self.download_engine)
+        self.pause_multiple = PauseMultipleService(self.repo, self.download_engine)
+        self.resume_multiple = ResumeMultipleService(self.repo, self.download_engine)
         self.queue_management = QueueManagementService(self.repo)
         self.archive = ArchiveService(self.repo)
         self.remove_task = RemoveTaskService(self.repo)

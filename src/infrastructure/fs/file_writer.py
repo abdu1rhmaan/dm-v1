@@ -7,9 +7,19 @@ class FileWriter:
         self.base = Path(base)
         self.base.mkdir(exist_ok=True)
 
-    def open(self, name, resume=False):
-        self.tmp = self.base / (name + ".part")
+    def open(self, name, resume=False, task_id=None):
+        # If task_id is provided, make the filename unique to avoid conflicts in parallel downloads
+        if task_id:
+            unique_name = f"{name}_{task_id}"
+        else:
+            unique_name = name
+        
+        self.tmp = self.base / (unique_name + ".part")
         self.final = self.base / name
+        
+        # Store original name and task_id for use in finalize
+        self._original_name = name
+        self._task_id = task_id
         
         if resume:
             # If resuming, check if .part file exists and open in append mode
@@ -36,7 +46,7 @@ class FileWriter:
 
     def get_current_size(self):
         """Get the current size of the .part file."""
-        if hasattr(self, 'fp') and self.fp:
+        if hasattr(self, 'fp') and self.fp and not self.fp.closed:
             # Get current position
             current_pos = self.fp.tell()
             return current_pos

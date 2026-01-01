@@ -11,6 +11,7 @@ from application.progress.console_progress_reporter import ConsoleProgressReport
 from application.progress.progress_manager import ProgressManager
 from application.hls.hls_downloader import HlsDownloader
 from application.mapping.queue_id_translator import QueueIdTranslator
+from application.progress.progress_manager_registry import progress_manager_registry
 
 
 class DownloadExecutionService:
@@ -39,23 +40,34 @@ class DownloadExecutionService:
         if queue_id is None:
             queue_id = 0  # Default to 0 if not found
         
-        # Create a ProgressManager for this download
-        from application.progress.progress_manager import ProgressManager
-        progress_manager = ProgressManager(queue_id, task.total)
+        # Determine which progress manager to use based on whether we're in multi-progress mode
+        active_manager = progress_manager_registry.get_active_manager()
+        
+        if progress_manager_registry.is_multi_mode():
+            # In multi-progress mode, get the shared multi-progress manager
+            multi_manager = progress_manager_registry.get_multi_progress_manager()
+            # Add this task to the multi-progress manager
+            progress_state = multi_manager.add_task(queue_id, task.total)
+            progress_manager = None  # We'll use the progress_state directly
+        else:
+            # In single-task mode, create a regular ProgressManager
+            from application.progress.progress_manager import ProgressManager
+            progress_manager = ProgressManager(queue_id, task.total)
+            progress_state = None  # We'll use the progress_manager directly
         
         # Check if this is an HLS stream (has .m3u8 extension or specific HLS indicators)
         if self._is_hls_stream(task.url):
             # Handle HLS stream download
-            return self._execute_hls_download(task, pause_check, progress_manager)
+            return self._execute_hls_download(task, pause_check, progress_manager, progress_state)
         else:
             # Handle regular HTTP download
-            return self._execute_regular_download(task, pause_check, progress_manager)
+            return self._execute_regular_download(task, pause_check, progress_manager, progress_state)
         
     def _is_hls_stream(self, url: str) -> bool:
         """Check if the URL is an HLS stream."""
         return url.lower().endswith('.m3u8')
         
-    def _execute_hls_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None, progress_manager=None):
+    def _execute_hls_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None, progress_manager=None, progress_state=None):
         """Execute HLS stream download."""
         try:
             # Extract filename from URL or use a default
@@ -76,7 +88,14 @@ class DownloadExecutionService:
                 self.repo.update(task)
                     
                 # Report progress
-                if progress_manager:
+                if progress_manager_registry.is_multi_mode():
+                    # In multi-progress mode, update the progress state directly
+                    from application.progress.progress_state import ProgressPhase
+                    # Set phase to downloading once we have data
+                    if downloaded > 0:
+                        progress_state.set_phase(ProgressPhase.DOWNLOADING)
+                    progress_state.update(downloaded, total)
+                elif progress_manager:
                     from application.progress.progress_state import ProgressPhase
                     # Set phase to downloading once we have data
                     if downloaded > 0:
@@ -100,7 +119,13 @@ class DownloadExecutionService:
                 return  # Exit early if paused
                 
             # Report completion
-            if progress_manager:
+            if progress_manager_registry.is_multi_mode():
+                # In multi-progress mode, remove the task from the multi-progress manager
+                multi_manager = progress_manager_registry.get_multi_progress_manager()
+                queue_id = self.queue_translator.get_queue_id_from_uuid(task.id)
+                if queue_id is not None:
+                    multi_manager.remove_task(queue_id)
+            elif progress_manager:
                 # Set phase to finalizing before finish
                 from application.progress.progress_state import ProgressPhase
                 progress_manager._state.set_phase(ProgressPhase.FINALIZING)
@@ -110,13 +135,19 @@ class DownloadExecutionService:
                 
         except Exception as e:
             # Report completion on error
-            if progress_manager:
+            if progress_manager_registry.is_multi_mode():
+                # In multi-progress mode, remove the task from the multi-progress manager
+                multi_manager = progress_manager_registry.get_multi_progress_manager()
+                queue_id = self.queue_translator.get_queue_id_from_uuid(task.id)
+                if queue_id is not None:
+                    multi_manager.remove_task(queue_id)
+            elif progress_manager:
                 progress_manager.finish()
             else:
                 self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()
             raise e
         
-    def _execute_regular_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None, progress_manager=None):
+    def _execute_regular_download(self, task: DownloadTask, pause_check: Callable[[], bool] | None = None, progress_manager=None, progress_state=None):
         """Execute regular HTTP download."""
         try:
             # Check if resumability has been checked, if not, check and update task
@@ -158,7 +189,7 @@ class DownloadExecutionService:
                         start_byte = task.downloaded
                 
             # Open file writer with resume option
-            self.writer.open(filename, resume=resume)
+            self.writer.open(filename, resume=resume, task_id=task.id)
                 
             # Adjust start_byte if resuming but file size differs from task.downloaded
             if resume and start_byte != self.writer.get_current_size():
@@ -179,7 +210,14 @@ class DownloadExecutionService:
                 self.repo.update(task)
                                 
                 # Report progress
-                if progress_manager:
+                if progress_manager_registry.is_multi_mode():
+                    # In multi-progress mode, update the progress state directly
+                    from application.progress.progress_state import ProgressPhase
+                    # Set phase to downloading once we have data
+                    if downloaded > 0:
+                        progress_state.set_phase(ProgressPhase.DOWNLOADING)
+                    progress_state.update(downloaded, total)
+                elif progress_manager:
                     from application.progress.progress_state import ProgressPhase
                     # Set phase to downloading once we have data
                     if downloaded > 0:
@@ -202,7 +240,7 @@ class DownloadExecutionService:
                 if start_byte > 0:
                     # If we're resuming but server doesn't support range or task is not resumable, start over
                     self.writer.close()
-                    self.writer.open(filename, resume=False)  # Start fresh
+                    self.writer.open(filename, resume=False, task_id=task.id)  # Start fresh
                     task.downloaded = 0
                     self.repo.update(task)
                     start_byte = 0
@@ -239,7 +277,13 @@ class DownloadExecutionService:
                 self.writer.finalize()
                                     
             # Report completion
-            if progress_manager:
+            if progress_manager_registry.is_multi_mode():
+                # In multi-progress mode, remove the task from the multi-progress manager
+                multi_manager = progress_manager_registry.get_multi_progress_manager()
+                queue_id = self.queue_translator.get_queue_id_from_uuid(task.id)
+                if queue_id is not None:
+                    multi_manager.remove_task(queue_id)
+            elif progress_manager:
                 # Set phase to finalizing before finish
                 from application.progress.progress_state import ProgressPhase
                 progress_manager._state.set_phase(ProgressPhase.FINALIZING)
@@ -249,7 +293,13 @@ class DownloadExecutionService:
                 
         except Exception as e:
             # Report completion on error
-            if progress_manager:
+            if progress_manager_registry.is_multi_mode():
+                # In multi-progress mode, remove the task from the multi-progress manager
+                multi_manager = progress_manager_registry.get_multi_progress_manager()
+                queue_id = self.queue_translator.get_queue_id_from_uuid(task.id)
+                if queue_id is not None:
+                    multi_manager.remove_task(queue_id)
+            elif progress_manager:
                 progress_manager.finish()
             else:
                 self.progress_reporter.finish() if self.progress_reporter else ConsoleProgressReporter().finish()

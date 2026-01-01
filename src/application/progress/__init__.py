@@ -1,5 +1,7 @@
 from .progress_reporter import ProgressReporter
 from .console_progress_reporter import ConsoleProgressReporter
 from .progress_manager import ProgressManager
+from .multi_progress_manager import MultiProgressManager
 from .progress_state import ProgressState, ProgressPhase
 from .progress_snapshot import ProgressSnapshot
+from .progress_aggregator import ProgressAggregator

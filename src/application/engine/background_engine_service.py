@@ -3,12 +3,13 @@ import time
 from typing import Optional
 from domain.repositories.task_repository import TaskRepository
 from application.engine.download_engine import DownloadEngine
+from application.progress.progress_manager_registry import progress_manager_registry
 
 
 class BackgroundEngineService:
     """Service that manages the background engine loop."""
     
-    def __init__(self, repo: TaskRepository, download_execution_service, event_manager=None):
+    def __init__(self, repo: TaskRepository, download_execution_service, event_manager=None, max_parallel_downloads=1):
         from application.events.task_events import TaskEventManager
         from application.events.archive_task_listener import ArchiveTaskListener
         from application.use_cases.archive_service import ArchiveService
@@ -23,7 +24,7 @@ class BackgroundEngineService:
             # Use the provided event manager
             self.event_manager = event_manager
         
-        self.download_engine = DownloadEngine(repo, download_execution_service, self.event_manager)
+        self.download_engine = DownloadEngine(repo, download_execution_service, self.event_manager, max_parallel_downloads)
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()

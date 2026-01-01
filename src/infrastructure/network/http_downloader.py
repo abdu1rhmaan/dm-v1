@@ -1,12 +1,17 @@
 import requests
 from typing import Callable, Optional, Any
+from application.engine.connection_manager import ConnectionManager
 
 
 class HttpDownloader:
+    def __init__(self, connection_manager: ConnectionManager = None):
+        self.connection_manager = connection_manager or ConnectionManager()
+    
     def check_range_support(self, url: str) -> bool:
         """Check if the server supports HTTP Range requests."""
         try:
-            response = requests.head(url, allow_redirects=True)
+            session = self.connection_manager.get_session_for_host(url)
+            response = session.head(url, allow_redirects=True)
             response.raise_for_status()
             return response.headers.get("Accept-Ranges", "").lower() == "bytes"
         except Exception:
@@ -21,7 +26,8 @@ class HttpDownloader:
             tuple: (is_resumable, has_content_length, content_length)
         """
         try:
-            response = requests.head(url, allow_redirects=True)
+            session = self.connection_manager.get_session_for_host(url)
+            response = session.head(url, allow_redirects=True)
             response.raise_for_status()
             
             # Check if server supports range requests
@@ -47,7 +53,8 @@ class HttpDownloader:
     def get_content_length(self, url: str) -> Optional[int]:
         """Get the total content length of the URL."""
         try:
-            response = requests.head(url, allow_redirects=True)
+            session = self.connection_manager.get_session_for_host(url)
+            response = session.head(url, allow_redirects=True)
             response.raise_for_status()
             content_length = response.headers.get("Content-Length")
             return int(content_length) if content_length else None
@@ -70,7 +77,8 @@ class HttpDownloader:
             # Use Range header to download from specific byte offset
             headers["Range"] = f"bytes={start_byte}-"
         
-        with requests.get(url, headers=headers, stream=True) as r:
+        session = self.connection_manager.get_session_for_host(url)
+        with session.get(url, headers=headers, stream=True) as r:
             r.raise_for_status()
             
             # If total_size is not provided, try to get it from Content-Range or Content-Length
